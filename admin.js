@@ -7,6 +7,7 @@ const fields = {
   tracking_code:'trackingCode',
   sender_name:'senderName',
   recipient_name:'recipientName',
+  customer_email:'customerEmail',
   origin:'origin',
   destination:'destination',
   delivery_address:'deliveryAddress',
