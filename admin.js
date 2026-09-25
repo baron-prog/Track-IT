@@ -183,18 +183,87 @@ function collect(){
   return p;
 }
 
+async function sendShipmentConfirmation(trackingCode){
+  if(previewMode){
+    return {
+      ok:false,
+      skipped:true,
+      message:'Email sending is unavailable in Preview Mode.'
+    };
+  }
+
+  const {data,error} = await TrackIT.client.functions.invoke(
+    'send-shipment-confirmation',
+    {
+      body:{
+        tracking_code:trackingCode
+      }
+    }
+  );
+
+  if(error) throw error;
+
+  if(data && data.error){
+    throw new Error(data.error);
+  }
+
+  return data || {ok:true};
+}
+
 $('packageForm').addEventListener('submit', async e => {
   e.preventDefault();
+
   const p = collect();
   const btn = $('saveBtn');
+
   btn.disabled = true;
   btn.textContent = 'Saving…';
+
   try{
     const oldCode = $('editingCode').value.trim();
+    const isNewShipment = !oldCode;
+
     await TrackIT.adminUpsert(p);
-    if(oldCode && oldCode !== p.tracking_code) await TrackIT.adminDelete(oldCode);
+
+    if(oldCode && oldCode !== p.tracking_code){
+      await TrackIT.adminDelete(oldCode);
+    }
+
+    let emailMessage = '';
+
+    if(isNewShipment && p.customer_email){
+      btn.textContent = 'Sending email…';
+
+      try{
+        const result = await sendShipmentConfirmation(
+          p.tracking_code
+        );
+
+        if(result?.skipped){
+          emailMessage =
+            result.message ||
+            'Confirmation email was not sent.';
+        }else{
+          emailMessage =
+            `Confirmation email sent to ${p.customer_email}.`;
+        }
+      }catch(emailError){
+        console.error('Confirmation email error:', emailError);
+
+        emailMessage =
+          `Package was saved, but the confirmation email could not be sent: ${
+            emailError.message || 'Unknown email error'
+          }`;
+      }
+    }
+
     clearForm();
     await loadList();
+
+    if(isNewShipment && p.customer_email){
+      alert(emailMessage);
+    }
+
   }catch(e){
     alert(e.message || 'Could not save shipment.');
   }finally{
@@ -219,6 +288,7 @@ async function loadList(){
             <div class="package-code">${TrackIT.esc(p.tracking_code)}</div>
             <div style="font-weight:850;margin-top:3px">${TrackIT.esc(p.recipient_name || 'Unnamed recipient')}</div>
             <div class="package-meta">${TrackIT.esc(p.destination || 'No destination')} · ${TrackIT.esc(TrackIT.fmt(p.delivery_date))}</div>
+            <div class="package-meta">Recipient email: ${TrackIT.esc(p.customer_email || 'Not provided')}</div>
             ${creatorLine}
             <div class="package-meta">Payment/support: ${TrackIT.esc(p.payment_email || 'Not assigned')}</div>
           </div>
@@ -228,6 +298,7 @@ async function loadList(){
           <button data-edit="${TrackIT.esc(p.tracking_code)}">Edit</button>
           <a href="${trackingUrl(p.tracking_code)}" target="_blank"><button type="button">Preview</button></a>
           <button data-copy="${TrackIT.esc(p.tracking_code)}">Copy Tracking Link</button>
+          ${p.customer_email ? `<button data-email="${TrackIT.esc(p.tracking_code)}">Resend Confirmation</button>` : ''}
           <button data-delete="${TrackIT.esc(p.tracking_code)}" style="color:#b42318">Delete</button>
         </div>
       </article>`;
@@ -249,6 +320,53 @@ async function loadList(){
           setTimeout(() => b.textContent = old, 1400);
         }catch{
           prompt('Copy this tracking link:', url);
+        }
+      };
+    });
+    root.querySelectorAll('[data-email]').forEach(b => {
+      b.onclick = async () => {
+        const code = b.dataset.email;
+        const row = rows.find(p => p.tracking_code === code);
+
+        if(!row?.customer_email){
+          alert('This shipment does not have a recipient email.');
+          return;
+        }
+
+        if(!confirm(`Resend the Track IT confirmation email to ${row.customer_email}?`)){
+          return;
+        }
+
+        const old = b.textContent;
+        b.disabled = true;
+        b.textContent = 'Sending…';
+
+        try{
+          const {data,error} = await TrackIT.client.functions.invoke(
+            'send-shipment-confirmation',
+            {
+              body:{
+                tracking_code:code,
+                force:true
+              }
+            }
+          );
+
+          if(error) throw error;
+          if(data?.error) throw new Error(data.error);
+
+          alert(`Confirmation email sent to ${row.customer_email}.`);
+          await loadList();
+
+        }catch(e){
+          alert(
+            `Could not send confirmation email: ${
+              e.message || 'Unknown email error'
+            }`
+          );
+        }finally{
+          b.disabled = false;
+          b.textContent = old;
         }
       };
     });
